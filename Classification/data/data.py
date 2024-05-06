@@ -110,3 +110,17 @@ class CriteoCSVData(Dataset):
 
     def __len__(self):
         return len(self.label)
+
+# 自作のcsvを読み込むクラスを生成
+class MYCSVData(Dataset):
+    def __init__(self, path, feat_dim, label_col):
+        self.data = pd.read_csv(path)
+        self.feat = self.data.iloc[:, 1:10].values # 2列目以降を特徴量として扱う
+        self.label = self.data.iloc[:, label_col].values # label_col列をラベルとする
+        
+    def __len__(self):
+        return len(self.y)
+    def __getitem__(self, idx):
+        return self.feat[idx], self.label[idx]
+    def __len__(self):
+        return len(self.label)
