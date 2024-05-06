@@ -112,12 +112,14 @@ class CriteoCSVData(Dataset):
         return len(self.label)
 
 # 自作のcsvを読み込むクラスを生成
+# ./../../Datasets_repair/03_wav_ondoku/ondoku_dataset/both_PD_HC/を読み出し
 class MYCSVData(Dataset):
     def __init__(self, path, feat_dim, label_col):
-        self.data = pd.read_csv(path)
-        self.feat = self.data.iloc[:, 1:10].values # 2列目以降を特徴量として扱う
-        self.label = self.data.iloc[:, label_col].values # label_col列をラベルとする
-        
+        self.data = pd.read_csv(path,encoding='cp932')
+        self.feat = self.data.loc[:, '反応時間':].values # 全特徴量
+        self.label = self.data.iloc[:, label_col].replace(0,-1) # label_col列をラベルとする
+        self.label = self.label.values
+        print(self.label)
     def __len__(self):
         return len(self.y)
     def __getitem__(self, idx):
