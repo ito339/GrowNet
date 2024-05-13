@@ -1,5 +1,6 @@
 #!/usr/bin/env python
 import numpy as np
+import pandas as pd
 import sklearn
 import argparse
 import copy
@@ -79,7 +80,7 @@ def get_data():
         # Split the data from cut point
         print('Creating Validation set! \n')
         indices = list(range(len(train)))
-        cut = int(len(train)*0.95)
+        cut = int(len(train)*0.80) #データを80%で分割
         np.random.shuffle(indices)
         train_idx = indices[:cut]
         val_idx = indices[cut:]
@@ -91,6 +92,8 @@ def get_data():
 
     if opt.normalization:
         scaler = MinMaxScaler() #StandardScaler()
+        print(opt.tr)
+        print(train.feat)
         scaler.fit(train.feat)
         train.feat = scaler.transform(train.feat)
         test.feat = scaler.transform(test.feat)
@@ -124,11 +127,14 @@ def logloss(net_ensemble, test_loader):
     loss_f = nn.BCEWithLogitsLoss() # Binary cross entopy loss with logits, reduction=mean by default
     for x, y in test_loader:
         if opt.cuda:
-            x, y= x.float().cuda(), y.float().cuda().view(-1, 1)
+            x, y= x.float().cuda(), y.float().cuda().view(-1)
+            # x, y= x.float().cuda(), y.long()
+            # num_classes = 2
+            # y = torch.nn.functional.one_hot(torch.tensor(y), num_classes).cuda().float()
         y = (y + 1) / 2
         with torch.no_grad():
             _, out = net_ensemble.forward(x)
-        out = torch.as_tensor(out, dtype=torch.float32).cuda().view(-1, 1)
+        out = torch.as_tensor(out, dtype=torch.float32).cuda().view(-1) # ここ.view(-1, 1)を入れるとバグる
         loss += loss_f(out, y)
         total += 1
 
@@ -137,16 +143,25 @@ def logloss(net_ensemble, test_loader):
 def auc_score(net_ensemble, test_loader):
     actual = []
     posterior = []
+    predict = []
     for x, y in test_loader:
         if opt.cuda:
             x = x.float().cuda()
         with torch.no_grad():
             _, out = net_ensemble.forward(x)
         prob = 1.0 - 1.0 / torch.exp(out)   # Why not using the scores themselve than converting to prob
+        # 両者の事後確率から0,1に変換
+        for i in range(len(prob)):
+            i_prob = prob[i]
+            pred = 1 if i_prob > 0.5 else 0
+            predict.append(pred)
         prob = prob.cpu().numpy().tolist()
         posterior.extend(prob)
         actual.extend(y.numpy().tolist())
-    score = auc(actual, posterior)
+    print("actual", actual)
+    print("posterior", posterior)
+    print("predict", predict)
+    score = auc(actual, predict)
     return score
 
 def init_gbnn(train):
@@ -167,10 +182,11 @@ if __name__ == "__main__":
     train, test, val = get_data()
     print(opt.data + ' training and test datasets are loaded!')
     #学習データとテストデータをDataLoaderで分割
-    train_loader = DataLoader(train, opt.batch_size, shuffle = True, drop_last=False, num_workers=2)
-    test_loader = DataLoader(test, opt.batch_size, shuffle=False, drop_last=False, num_workers=2)
+    #num_workersは並列処理の数
+    train_loader = DataLoader(train, opt.batch_size, shuffle = True, drop_last=True, num_workers=2)
+    test_loader = DataLoader(test, opt.batch_size, shuffle=False, drop_last=True, num_workers=2)
     if opt.cv:
-        val_loader = DataLoader(val, opt.batch_size, shuffle=True, drop_last=False, num_workers=2)
+        val_loader = DataLoader(val, opt.batch_size, shuffle=True, drop_last=True, num_workers=2)
     # For CV use
     best_score = 0
     val_score = best_score
@@ -181,8 +197,15 @@ if __name__ == "__main__":
     #動的ニューラルネットワーク（Neural Boostingのこと）
     net_ensemble = DynamicNet(c0, opt.boost_rate)
     
+    # lossの重みを追加するためにtrain.csvを読み込み
+    df = pd.read_csv(opt.tr,encoding='cp932')
+    df_label = df.iloc[1]
+    # Numpyの整数型をPyTorchのテンソルに変換し、それをGPUメモリ上に移動する
+    count_0 = torch.tensor(df_label==0, dtype=torch.float32).sum().cuda()
+    count_1 = torch.tensor(df_label==1, dtype=torch.float32).sum().cuda()
+    loss_weights = torch.tensor([count_1, count_0]).cuda()
     loss_f1 = nn.MSELoss(reduction='none')
-    loss_f2 = nn.BCEWithLogitsLoss(reduction='none')
+    loss_f2 = nn.BCEWithLogitsLoss(reduction='none',weight=loss_weights)
     loss_models = torch.zeros((opt.num_nets, 3))
 
     all_ensm_losses = []
@@ -218,10 +241,13 @@ if __name__ == "__main__":
                     print("x",x.shape)
                     print("y",y.shape)
                     #x, yをそれぞれgpuメモリ上に転送
-                    x, y= x.float().cuda(), y.float().cuda().view(-1, 1)
+                    x, y= x.float().cuda(), y.long().cuda().view(-1) # view(-1, 1)があるとバグる？
                 #順伝播計算をしている．middle_featが中間の特徴量，outが最終出力
-                middle_feat, out = net_ensemble.forward(x)
-                out = torch.as_tensor(out, dtype=torch.float32).cuda().view(-1, 1)
+                middle_feat, out = net_ensemble.forward(x) #学習中はout=init_gbnnを出力
+                print("middle_feat", middle_feat)
+                print("out", out)
+                out = torch.as_tensor(out, dtype=torch.float32).cuda()
+                print("torch_tensor_out", out)
                 #層の深さによって計算方法が異なる．重みの更新
                 if opt.model_order=='first':
                     grad_direction = y / (1.0 + torch.exp(y * out))
@@ -261,12 +287,16 @@ if __name__ == "__main__":
             for _ in range(opt.correct_epoch):
                 for i, (x, y) in enumerate(train_loader):
                     if opt.cuda:
-                        x, y = x.float().cuda(), y.float().cuda().view(-1, 1)
+                        x, y = x.float().cuda(), y.float().cuda().view(-1)
                     
                     #モデルにxを入力
                     _, out = net_ensemble.forward_grad(x)
-                    out = torch.as_tensor(out, dtype=torch.float32).cuda().view(-1, 1)
+                    out = torch.as_tensor(out, dtype=torch.float32).cuda().view(-1)
                     y = (y + 1.0) / 2.0
+                    print("out.shape", out.shape)
+                    print("out", out)
+                    print("y.shape", y.shape)
+                    print("y", y)
                     loss = loss_f2(out, y).mean() 
                     optimizer.zero_grad()
                     loss.backward()
