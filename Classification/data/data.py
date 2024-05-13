@@ -116,10 +116,17 @@ class CriteoCSVData(Dataset):
 class MYCSVData(Dataset):
     def __init__(self, path, feat_dim, label_col):
         self.data = pd.read_csv(path,encoding='cp932')
-        self.feat = self.data.loc[:, '反応時間':].values # 全特徴量
-        self.label = self.data.iloc[:, label_col].replace(0,-1) # label_col列をラベルとする
+        if '性別' in self.data.columns:
+            # ラベルエンコーディング
+            label_map = {'M': 0, 'F': 1}
+            self.data['性別'] = self.data['性別'].map(label_map)
+            print(self.data)
+            
+        self.feat = self.data.iloc[:, 2:].values # 選出された特徴量
+        self.label = self.data.iloc[:, label_col].replace(0,-1) # label_col列を[-1,1]とする
         self.label = self.label.values
-        print(self.label)
+        print("feat size", self.feat.shape)
+        print("label size", self.label.shape)
     def __len__(self):
         return len(self.y)
     def __getitem__(self, idx):
