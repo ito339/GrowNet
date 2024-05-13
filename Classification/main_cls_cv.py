@@ -16,6 +16,7 @@ from sklearn.preprocessing import StandardScaler, MinMaxScaler
 from torch.utils.data.sampler import SubsetRandomSampler
 from torch.optim import SGD, Adam
 from misc.auc import auc
+from sklearn.metrics import f1_score # f1_scoreを求めるための関数を定義
 
 
 parser = argparse.ArgumentParser()
@@ -164,6 +165,31 @@ def auc_score(net_ensemble, test_loader):
     score = auc(actual, predict)
     return score
 
+def F1_measure(net_ensemble, test_loader):
+    actual = []
+    posterior = []
+    predict = []
+    for x, y in test_loader:
+        if opt.cuda:
+            x = x.float().cuda()
+        with torch.no_grad():
+            _, out = net_ensemble.forward(x)
+        prob = 1.0 - 1.0 / torch.exp(out)   # Why not using the scores themselve than converting to prob
+        # 両者の事後確率から0,1に変換
+        for i in range(len(prob)):
+            i_prob = prob[i]
+            pred = 1 if i_prob > 0.5 else 0
+            predict.append(pred)
+        prob = prob.cpu().numpy().tolist()
+        posterior.extend(prob)
+        actual.extend(y.numpy().tolist())
+    actual = [int((i + 1) / 2) for i in actual]
+    print("actual", actual)
+    print("posterior", posterior)
+    print("predict", predict)
+    score = f1_score(actual, predict)
+    return score
+
 def init_gbnn(train):
     positive = negative = 0
     for i in range(len(train)):
@@ -190,6 +216,7 @@ if __name__ == "__main__":
     # For CV use
     best_score = 0
     val_score = best_score
+    best_f1_score = 0
     best_stage = opt.num_nets-1
 
     #データ数の多い方を予測した結果（データの偏り）
@@ -332,11 +359,23 @@ if __name__ == "__main__":
 
         # Train
         print('Acc results from stage := ' + str(stage) + '\n')
+
+        # # f1_score
+        # if opt.cv:
+        #     val_score = F1_measure(net_ensemble, val_loader)
+        #     if val_score > best_score:
+        #         best_score = val_score
+        #         best_stage = stage
+        val_f1_score = F1_measure(net_ensemble, val_loader)
+        test_f1_score = F1_measure(net_ensemble, test_loader)
+        print(f'Stage: {stage}, F1_score@Val: {val_f1_score:.4f}, F1_score@Test: {test_f1_score:.4f}')
+
         # AUC
         if opt.cv:
             val_score = auc_score(net_ensemble, val_loader) 
             if val_score > best_score:
                 best_score = val_score
+                best_f1_score = test_f1_score
                 best_stage = stage
 
         test_score = auc_score(net_ensemble, test_loader)
@@ -345,7 +384,7 @@ if __name__ == "__main__":
         loss_models[stage, 1], loss_models[stage, 2] = val_score, test_score
 
     val_auc, te_auc = loss_models[best_stage, 1], loss_models[best_stage, 2]
-    print(f'Best validation stage: {best_stage},  AUC@Val: {val_auc:.4f}, final AUC@Test: {te_auc:.4f}')
+    print(f'Best validation stage: {best_stage},  AUC@Val: {val_auc:.4f}, final AUC@Test: {te_auc:.4f}, final f1_score@Test: {best_f1_score:.4f}')
 
     loss_models = loss_models.detach().cpu().numpy()
     fname = 'tr_ts_' + opt.data +'_auc'
